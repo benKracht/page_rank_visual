@@ -145,14 +145,14 @@ export function buildPresetGraph(preset) {
     g.addEdge("FAQ", "Shop", 1);
   } else if (preset === "trap") {
     // Spider trap: B↔C cycle absorbs rank without teleportation
-    ["A", "B", "C", "D", "E"].forEach((n) => g.addNode(n));
-    g.addEdge("A", "B", 1);
-    g.addEdge("A", "D", 1);
-    g.addEdge("B", "C", 1);
-    g.addEdge("C", "B", 1);
-    g.addEdge("D", "A", 1);
-    g.addEdge("D", "E", 1);
-    g.addEdge("E", "A", 1);
+    ["Normal_1", "Trap_1", "Trap_2", "Normal_2", "Normal_3"].forEach((n) => g.addNode(n));
+    g.addEdge("Normal_1", "Trap_1", 1);
+    g.addEdge("Normal_1", "Normal_2", 1);
+    g.addEdge("Trap_1", "Trap_2", 1);
+    g.addEdge("Trap_2", "Trap_1", 1);
+    g.addEdge("Normal_2", "Normal_1", 1);
+    g.addEdge("Normal_2", "Normal_3", 1);
+    g.addEdge("Normal_3", "Normal_1", 1);
   }
 
   g.normalize();

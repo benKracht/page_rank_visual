@@ -77,7 +77,7 @@ export function useGraphSimulation(containerRef, preset) {
     setStats({ totalSteps: 0, scores: { ...initScores }, trueRanks });
   }, [preset, containerRef]);
 
-  // Re-layout on resize without resetting simulation
+  // Re-layout on window resize (without resetting simulation)
   useEffect(() => {
     const handleResize = () => {
       const el = containerRef.current;
@@ -88,6 +88,14 @@ export function useGraphSimulation(containerRef, preset) {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [containerRef]);
+
+  // Explicit re-layout for an arbitrary canvas size (used when entering/leaving
+  // high-res recording mode, where the render target differs from the container).
+  const relayoutForSize = useCallback((w, h) => {
+    const st = stateRef.current;
+    if (!st.graph) return;
+    st.positions = layoutNodes(st.graph, w, h);
+  }, []);
 
   // Main simulation loop
   useEffect(() => {
@@ -155,18 +163,14 @@ export function useGraphSimulation(containerRef, preset) {
   const setWalkerCount = useCallback((count) => {
     const st = stateRef.current;
     st.walkerCount = count;
-
-    // If graph isn't initialized yet, just return
     if (!st.graph) return;
 
     const currentWalkers = st.walkers;
     const currentLen = currentWalkers.length;
 
     if (count > currentLen) {
-      // 1. ADD WALKERS: Create new random walkers to fill the gap
       const diff = count - currentLen;
       const nodes = Array.from(st.graph.nodes);
-      
       for (let i = 0; i < diff; i++) {
         const startNode = nodes[Math.floor(Math.random() * nodes.length)];
         currentWalkers.push({
@@ -177,14 +181,12 @@ export function useGraphSimulation(containerRef, preset) {
         });
       }
     } else if (count < currentLen) {
-      // 2. REMOVE WALKERS: Simply trim the array
       currentWalkers.length = count;
     }
   }, []);
 
   const setDampingFactor = useCallback((d) => {
     stateRef.current.dampingFactor = d;
-    // Recalculate true ranks for the new damping factor
     if (stateRef.current.graph) {
       stateRef.current.trueRanks = stateRef.current.graph.calculatePageRank(d);
       setStats((prev) => ({ ...prev, trueRanks: stateRef.current.trueRanks }));
@@ -199,5 +201,6 @@ export function useGraphSimulation(containerRef, preset) {
     setSpeed,
     setWalkerCount,
     setDampingFactor,
+    relayoutForSize,
   };
 }

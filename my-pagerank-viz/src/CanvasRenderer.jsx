@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { COLORS, CONFIG } from "./constants";
 
 /**
@@ -10,9 +10,6 @@ function getCurveOffset(graph, u, v) {
   return hasReverse ? 35 : 18;
 }
 
-/**
- * Quadratic bezier control point for a curved edge.
- */
 function getControlPoint(from, to, curvature) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -26,9 +23,6 @@ function getControlPoint(from, to, curvature) {
   };
 }
 
-/**
- * Point on a quadratic bezier at parameter t.
- */
 function bezierPoint(sx, sy, cx, cy, ex, ey, t) {
   const inv = 1 - t;
   return {
@@ -37,9 +31,6 @@ function bezierPoint(sx, sy, cx, cy, ex, ey, t) {
   };
 }
 
-/**
- * Tangent of a quadratic bezier at parameter t.
- */
 function bezierTangent(sx, sy, cx, cy, ex, ey, t) {
   const inv = 1 - t;
   return {
@@ -48,11 +39,6 @@ function bezierTangent(sx, sy, cx, cy, ex, ey, t) {
   };
 }
 
-/**
- * Binary search for the bezier t where the curve is exactly `radius` away
- * from `center`. Searches within [tLo, tHi], assuming curve starts far
- * and approaches center. Returns the last t still outside the circle.
- */
 function findTAtRadius(sx, sy, cx, cy, ex, ey, center, radius, tLo, tHi) {
   for (let i = 0; i < 14; i++) {
     const tMid = (tLo + tHi) / 2;
@@ -67,23 +53,17 @@ function findTAtRadius(sx, sy, cx, cy, ex, ey, center, radius, tLo, tHi) {
   return tLo;
 }
 
-/**
- * Draw a curved directed edge with arrowhead precisely at the target node boundary.
- */
 function drawEdge(ctx, from, to, curvature, color, lineWidth) {
   const ctrl = getControlPoint(from, to, curvature);
   const r = CONFIG.NODE_RADIUS;
-  const margin = 2; // small gap so arrow doesn't touch node
+  const margin = 2;
 
-  // Clip start: find t where curve exits source node circle
-  // We search on the reversed curve (end→start) to find entry into source
   const tStartRev = findTAtRadius(
     to.x, to.y, ctrl.x, ctrl.y, from.x, from.y,
     from, r + margin, 0.0, 1.0
   );
   const clampedStart = Math.max(0.02, 1 - tStartRev);
 
-  // Clip end: find t where curve enters target node circle
   const clampedEnd = findTAtRadius(
     from.x, from.y, ctrl.x, ctrl.y, to.x, to.y,
     to, r + margin, 0.5, 1.0
@@ -91,7 +71,6 @@ function drawEdge(ctx, from, to, curvature, color, lineWidth) {
 
   if (clampedEnd <= clampedStart + 0.02) return;
 
-  // Draw the curve segment
   const steps = 24;
   ctx.beginPath();
   const p0 = bezierPoint(from.x, from.y, ctrl.x, ctrl.y, to.x, to.y, clampedStart);
@@ -105,14 +84,13 @@ function drawEdge(ctx, from, to, curvature, color, lineWidth) {
   ctx.lineWidth = lineWidth;
   ctx.stroke();
 
-  // Arrowhead at clampedEnd, oriented along tangent
   const tip = bezierPoint(from.x, from.y, ctrl.x, ctrl.y, to.x, to.y, clampedEnd);
   const tang = bezierTangent(from.x, from.y, ctrl.x, ctrl.y, to.x, to.y, clampedEnd);
   const tLen = Math.sqrt(tang.x ** 2 + tang.y ** 2);
   if (tLen < 0.01) return;
   const tx = tang.x / tLen;
   const ty = tang.y / tLen;
-  const nx = -ty; // perpendicular
+  const nx = -ty;
   const ny = tx;
 
   const arrowLen = 9;
@@ -126,9 +104,6 @@ function drawEdge(ctx, from, to, curvature, color, lineWidth) {
   ctx.fill();
 }
 
-/**
- * Walker position along an edge or teleport line.
- */
 function getWalkerPosition(from, to, curvature, t, type) {
   if (type === "teleport") {
     return {
@@ -140,11 +115,34 @@ function getWalkerPosition(from, to, curvature, t, type) {
   return bezierPoint(from.x, from.y, ctrl.x, ctrl.y, to.x, to.y, t);
 }
 
-export default function CanvasRenderer({ stateRef, width, height }) {
+/**
+ * CanvasRenderer — renders the graph simulation.
+ *
+ * Props:
+ *   stateRef       – shared simulation state ref
+ *   width, height  – CSS display dimensions (px)
+ *   renderSize     – optional { w, h } forcing internal pixel resolution
+ *                    (used for high-res recording). Falls back to width/height.
+ *
+ * Exposes via ref:
+ *   getCanvas()    – the underlying <canvas> DOM node (for captureStream)
+ */
+const CanvasRenderer = forwardRef(function CanvasRenderer(
+  { stateRef, width, height, renderSize },
+  ref
+) {
   const canvasRef = useRef(null);
   const animIdRef = useRef(null);
 
-  // --- Drag handlers ---
+  useImperativeHandle(ref, () => ({
+    getCanvas: () => canvasRef.current,
+  }));
+
+  // Effective internal pixel resolution (may differ from CSS size for recording)
+  const pxW = renderSize?.w ?? width;
+  const pxH = renderSize?.h ?? height;
+
+  // --- Drag handlers (convert CSS coords → canvas pixel coords) ---
   const handleMouseDown = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -189,9 +187,12 @@ export default function CanvasRenderer({ stateRef, width, height }) {
     const render = () => {
       const { graph, positions, walkers, scores, totalSteps } = stateRef.current;
 
-      canvas.width = width;
-      canvas.height = height;
-      ctx.clearRect(0, 0, width, height);
+      // Only write canvas.width/height when it actually changes. Assigning every
+      // frame would reset captureStream and flash the canvas.
+      if (canvas.width !== pxW) canvas.width = pxW;
+      if (canvas.height !== pxH) canvas.height = pxH;
+
+      ctx.clearRect(0, 0, pxW, pxH);
 
       if (!graph || Object.keys(positions).length === 0) {
         animIdRef.current = requestAnimationFrame(render);
@@ -203,11 +204,11 @@ export default function CanvasRenderer({ stateRef, width, height }) {
       // --- Background grid ---
       ctx.strokeStyle = "rgba(30, 41, 59, 0.15)";
       ctx.lineWidth = 0.5;
-      for (let gx = 0; gx < width; gx += 50) {
-        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, height); ctx.stroke();
+      for (let gx = 0; gx < pxW; gx += 50) {
+        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, pxH); ctx.stroke();
       }
-      for (let gy = 0; gy < height; gy += 50) {
-        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke();
+      for (let gy = 0; gy < pxH; gy += 50) {
+        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(pxW, gy); ctx.stroke();
       }
 
       // --- 1. Draw edges ---
@@ -255,7 +256,6 @@ export default function CanvasRenderer({ stateRef, width, height }) {
             walkerColor = COLORS.walkerTeleport;
             walkerRadius = 3.5;
 
-            // Dashed teleport trail
             ctx.beginPath();
             ctx.setLineDash([3, 5]);
             ctx.moveTo(fromPos.x, fromPos.y);
@@ -266,13 +266,11 @@ export default function CanvasRenderer({ stateRef, width, height }) {
             ctx.setLineDash([]);
           }
         } else {
-          // At rest on current node
           wx = fromPos.x;
           wy = fromPos.y;
           walkerRadius = 2;
         }
 
-        // Glow
         const glowR = walkerRadius + 4;
         const glow = ctx.createRadialGradient(wx, wy, 0, wx, wy, glowR);
         glow.addColorStop(0, walkerColor);
@@ -282,7 +280,6 @@ export default function CanvasRenderer({ stateRef, width, height }) {
         ctx.fillStyle = glow;
         ctx.fill();
 
-        // Solid dot
         ctx.beginPath();
         ctx.arc(wx, wy, walkerRadius, 0, Math.PI * 2);
         ctx.fillStyle = walkerColor;
@@ -301,7 +298,6 @@ export default function CanvasRenderer({ stateRef, width, height }) {
 
         const r = CONFIG.NODE_RADIUS + scoreRatio * 6;
 
-        // Outer glow
         const outerGlow = ctx.createRadialGradient(pos.x, pos.y, r, pos.x, pos.y, r * 2.2);
         outerGlow.addColorStop(0, `rgba(59, 130, 246, ${0.06 + scoreRatio * 0.18})`);
         outerGlow.addColorStop(1, "transparent");
@@ -310,26 +306,22 @@ export default function CanvasRenderer({ stateRef, width, height }) {
         ctx.fillStyle = outerGlow;
         ctx.fill();
 
-        // Node fill
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
         ctx.fillStyle = COLORS.surface;
         ctx.fill();
 
-        // Border — shifts blue→amber with score
         const hue = 210 - scoreRatio * 175;
         ctx.strokeStyle = `hsl(${hue}, 75%, 55%)`;
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
-        // Node label
         ctx.fillStyle = "#fff";
         ctx.font = "bold 11px -apple-system, 'Segoe UI', sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(node, pos.x, pos.y);
 
-        // Percentage below node
         if (totalSteps > 0) {
           ctx.fillStyle = COLORS.accent;
           ctx.font = "bold 10px monospace";
@@ -344,7 +336,7 @@ export default function CanvasRenderer({ stateRef, width, height }) {
     return () => {
       if (animIdRef.current) cancelAnimationFrame(animIdRef.current);
     };
-  }, [stateRef, width, height]);
+  }, [stateRef, pxW, pxH]);
 
   return (
     <canvas
@@ -356,4 +348,6 @@ export default function CanvasRenderer({ stateRef, width, height }) {
       style={{ cursor: "grab", display: "block", width: "100%", height: "100%" }}
     />
   );
-}
+});
+
+export default CanvasRenderer;

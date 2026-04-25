@@ -1,10 +1,19 @@
 import React, { useState, useEffect, useRef } from "react";
 import { COLORS, CONFIG } from "./constants";
 import { useGraphSimulation } from "./useGraphSimulation";
+import { useCanvasRecorder } from "./useCanvasRecorder";
 import CanvasRenderer from "./CanvasRenderer";
+
+// Recording resolution presets
+const RECORD_RESOLUTIONS = {
+  "720p":  { w: 1280, h: 720,  label: "HD 720p"  },
+  "1080p": { w: 1920, h: 1080, label: "FHD 1080p" },
+  "1440p": { w: 2560, h: 1440, label: "QHD 1440p" },
+};
 
 export default function PageRankVisualizer() {
   const containerRef = useRef(null);
+  const rendererRef = useRef(null);
   const [dimensions, setDimensions] = useState({ w: 800, h: 600 });
 
   const [preset, setPreset] = useState("web");
@@ -12,6 +21,11 @@ export default function PageRankVisualizer() {
   const [speed, setSpeed] = useState(1);
   const [walkerCount, setWalkerCount] = useState(CONFIG.WALKER_COUNT);
   const [dampingFactor, setDampingFactor] = useState(CONFIG.DAMPING_FACTOR);
+
+  // Recording state
+  const [recordResKey, setRecordResKey] = useState("1080p");
+  const [recordOverride, setRecordOverride] = useState(null); // { w, h } when recording
+  const recorder = useCanvasRecorder();
 
   const {
     stateRef,
@@ -21,9 +35,10 @@ export default function PageRankVisualizer() {
     setSpeed: setSimSpeed,
     setWalkerCount: setSimWalkerCount,
     setDampingFactor: setSimDampingFactor,
+    relayoutForSize,
   } = useGraphSimulation(containerRef, preset);
 
-  // Resize
+  // --- Resize observer ---
   useEffect(() => {
     const onResize = () => {
       if (containerRef.current) {
@@ -38,7 +53,7 @@ export default function PageRankVisualizer() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Sync controls → simulation
+  // --- Sync controls → simulation ---
   useEffect(() => {
     reset();
     setIsRunning(false);
@@ -49,14 +64,44 @@ export default function PageRankVisualizer() {
   useEffect(() => { setSimWalkerCount(walkerCount); }, [walkerCount, setSimWalkerCount]);
   useEffect(() => { setSimDampingFactor(dampingFactor); }, [dampingFactor, setSimDampingFactor]);
 
-  // Sort nodes by estimated rank
+  // --- Recording control ---
+  const handleToggleRecord = () => {
+    if (recorder.isRecording) {
+      recorder.stop();
+      // Return layout to container dimensions
+      setRecordOverride(null);
+      relayoutForSize(dimensions.w, dimensions.h);
+      return;
+    }
+
+    const res = RECORD_RESOLUTIONS[recordResKey];
+    // Re-layout nodes for the recording canvas size so they're centered &
+    // well-spaced at the target resolution. User's manual drag positions will
+    // be overwritten — a fair tradeoff for a clean recording.
+    relayoutForSize(res.w, res.h);
+    setRecordOverride(res);
+
+    // Give React one frame to apply the new renderSize to the canvas, then
+    // attach MediaRecorder to the (now high-res) canvas element.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const canvas = rendererRef.current?.getCanvas();
+        if (!canvas) return;
+        recorder.start(canvas, {
+          fps: 60,
+          bitsPerSecond: 20_000_000,
+          filename: `pagerank-${preset}-${res.w}x${res.h}.webm`,
+        });
+      });
+    });
+  };
+
   const sortedNodes = Object.keys(stats.scores).sort(
     (a, b) => stats.scores[b] - stats.scores[a]
   );
 
   const teleportPct = ((1 - dampingFactor) * 100).toFixed(0);
 
-  // Shared label style
   const labelStyle = {
     fontSize: 11,
     fontWeight: 700,
@@ -65,6 +110,11 @@ export default function PageRankVisualizer() {
     marginBottom: 6,
     letterSpacing: 0.5,
   };
+
+  // Format elapsed recording time as mm:ss
+  const recSeconds = Math.floor(recorder.elapsedMs / 1000);
+  const recMin = String(Math.floor(recSeconds / 60)).padStart(2, "0");
+  const recSec = String(recSeconds % 60).padStart(2, "0");
 
   return (
     <div
@@ -107,6 +157,7 @@ export default function PageRankVisualizer() {
                 <button
                   key={p}
                   onClick={() => setPreset(p)}
+                  disabled={recorder.isRecording}
                   style={{
                     background: preset === p ? COLORS.accent : COLORS.surface,
                     color: preset === p ? COLORS.bg : COLORS.text,
@@ -115,7 +166,8 @@ export default function PageRankVisualizer() {
                     padding: "6px",
                     fontSize: 11,
                     fontWeight: 600,
-                    cursor: "pointer",
+                    cursor: recorder.isRecording ? "not-allowed" : "pointer",
+                    opacity: recorder.isRecording ? 0.5 : 1,
                     textTransform: "uppercase",
                     transition: "all 0.15s",
                   }}
@@ -126,7 +178,7 @@ export default function PageRankVisualizer() {
             </div>
           </div>
 
-          {/* Speed slider */}
+          {/* Speed */}
           <div style={{ marginBottom: 14 }}>
             <label style={labelStyle}>SPEED ({speed.toFixed(1)}x)</label>
             <input
@@ -136,11 +188,9 @@ export default function PageRankVisualizer() {
             />
           </div>
 
-          {/* Walker count slider */}
+          {/* Walkers */}
           <div style={{ marginBottom: 14 }}>
-            <label style={labelStyle}>
-              WALKERS ({walkerCount})
-            </label>
+            <label style={labelStyle}>WALKERS ({walkerCount})</label>
             <input
               type="range" min="1" max="200" step="1" value={walkerCount}
               onChange={(e) => setWalkerCount(Number(e.target.value))}
@@ -152,7 +202,7 @@ export default function PageRankVisualizer() {
             </div>
           </div>
 
-          {/* Teleport probability slider */}
+          {/* Teleport probability */}
           <div style={{ marginBottom: 14 }}>
             <label style={labelStyle}>
               TELEPORT PROB ({teleportPct}%)
@@ -171,7 +221,7 @@ export default function PageRankVisualizer() {
             </div>
           </div>
 
-          {/* Start / Reset buttons */}
+          {/* Start / Reset */}
           <div style={{ display: "flex", gap: 8 }}>
             <button
               onClick={() => setIsRunning(!isRunning)}
@@ -192,19 +242,98 @@ export default function PageRankVisualizer() {
             </button>
             <button
               onClick={() => { reset(); setIsRunning(false); }}
+              disabled={recorder.isRecording}
               style={{
                 padding: "0 14px",
                 borderRadius: 4,
                 border: `1px solid ${COLORS.border}`,
                 background: "transparent",
                 color: COLORS.text,
-                cursor: "pointer",
+                cursor: recorder.isRecording ? "not-allowed" : "pointer",
+                opacity: recorder.isRecording ? 0.4 : 1,
                 fontSize: 14,
               }}
               title="Reset"
             >
               ↻
             </button>
+          </div>
+        </div>
+
+        {/* --- Recording panel --- */}
+        <div style={{ padding: 20, borderBottom: `1px solid ${COLORS.border}` }}>
+          <label style={labelStyle}>RECORDING</label>
+
+          <select
+            value={recordResKey}
+            onChange={(e) => setRecordResKey(e.target.value)}
+            disabled={recorder.isRecording}
+            style={{
+              width: "100%",
+              padding: "6px 8px",
+              background: COLORS.surface,
+              color: COLORS.text,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 4,
+              fontSize: 12,
+              marginBottom: 10,
+              cursor: recorder.isRecording ? "not-allowed" : "pointer",
+            }}
+          >
+            {Object.entries(RECORD_RESOLUTIONS).map(([key, r]) => (
+              <option key={key} value={key}>
+                {r.label} — {r.w}×{r.h}
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={handleToggleRecord}
+            style={{
+              width: "100%",
+              padding: 10,
+              borderRadius: 4,
+              background: recorder.isRecording ? "#dc2626" : COLORS.surface,
+              color: "#fff",
+              fontWeight: 700,
+              cursor: "pointer",
+              fontSize: 12,
+              letterSpacing: 0.5,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              border: recorder.isRecording ? "none" : `1px solid ${COLORS.border}`,
+              marginBottom: 0,
+            }}
+          >
+            {recorder.isRecording ? (
+              <>
+                <span style={{
+                  width: 8, height: 8, borderRadius: "50%",
+                  background: "#fff", animation: "pulse 1s ease-in-out infinite",
+                }} />
+                STOP ({recMin}:{recSec})
+              </>
+            ) : (
+              <>● RECORD</>
+            )}
+          </button>
+
+          <div style={{ fontSize: 10, color: COLORS.textDim, marginTop: 8, lineHeight: 1.5 }}>
+            Saves a .webm file. Convert to mp4 with:
+            <code style={{
+              display: "block",
+              marginTop: 4,
+              padding: 6,
+              background: COLORS.bg,
+              borderRadius: 3,
+              fontSize: 9,
+              wordBreak: "break-all",
+              color: COLORS.accent,
+            }}>
+              ffmpeg -i in.webm -c:v libx264 -crf 18 -pix_fmt yuv420p out.mp4
+            </code>
           </div>
         </div>
 
@@ -296,7 +425,43 @@ export default function PageRankVisualizer() {
 
       {/* --- Canvas --- */}
       <div ref={containerRef} style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        <CanvasRenderer stateRef={stateRef} width={dimensions.w} height={dimensions.h} />
+        <CanvasRenderer
+          ref={rendererRef}
+          stateRef={stateRef}
+          width={dimensions.w}
+          height={dimensions.h}
+          renderSize={recordOverride}
+        />
+
+        {/* REC indicator overlay */}
+        {recorder.isRecording && (
+          <div
+            style={{
+              position: "absolute",
+              top: 16,
+              right: 16,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 12px",
+              background: "rgba(220, 38, 38, 0.9)",
+              color: "#fff",
+              borderRadius: 4,
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: 1,
+              pointerEvents: "none",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+            }}
+          >
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: "#fff",
+              animation: "pulse 1s ease-in-out infinite",
+            }} />
+            REC {recMin}:{recSec} · {recordOverride?.w}×{recordOverride?.h}
+          </div>
+        )}
 
         {/* Legend */}
         <div
@@ -323,6 +488,14 @@ export default function PageRankVisualizer() {
           </span>
         </div>
       </div>
+
+      {/* Keyframes for the REC pulse — inlined so no CSS file changes needed */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
     </div>
   );
 }
